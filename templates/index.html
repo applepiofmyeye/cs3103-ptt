@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Student Audio Stream</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Student Audio Stream</h1>
+        <div>
+            <input type="text" id="studentIdInput" placeholder="Enter Student ID" />
+            <button id="pushToTalkBtn">Push to Talk</button>
+        </div>
+        <div id="status"></div>
+    </div>
+
+    <script>
+        const socket = io();
+        const studentIdInput = document.getElementById('studentIdInput');
+        const pushToTalkBtn = document.getElementById('pushToTalkBtn');
+        const statusDiv = document.getElementById('status');
+        let isStreaming = false;
+
+        studentIdInput.addEventListener('input', function() {
+            pushToTalkBtn.style.display = this.value ? 'inline-block' : 'none';
+        });
+
+        pushToTalkBtn.addEventListener('click', function() {
+            if (!isStreaming) {
+                startStream();
+            } else {
+                stopStream();
+            }
+        });
+
+        function startStream() {
+            const studentId = studentIdInput.value;
+            if (!studentId) {
+                updateStatus('Please enter a student ID', 'error');
+                return;
+            }
+
+            socket.emit('start_stream', { student_id: studentId }, (response) => {
+                if (response.success) {
+                    isStreaming = true;
+                    pushToTalkBtn.textContent = 'Stop Talking';
+                    pushToTalkBtn.classList.add('active');
+                    studentIdInput.disabled = true;
+                    updateStatus('Streaming audio...', 'success');
+                } else {
+                    updateStatus(response.message, 'error');
+                }
+            });
+        }
+
+        function stopStream() {
+            socket.emit('stop_stream', (response) => {
+                if (response.success) {
+                    isStreaming = false;
+                    pushToTalkBtn.textContent = 'Push to Talk';
+                    pushToTalkBtn.classList.remove('active');
+                    studentIdInput.disabled = false;
+                    updateStatus('Stream stopped', 'success');
+                } else {
+                    updateStatus(response.message, 'error');
+                }
+            });
+        }
+
+        function updateStatus(message, type) {
+            statusDiv.textContent = message;
+            statusDiv.style.color = type === 'error' ? '#f44336' : '#4CAF50';
+        }
+
+        // Handle socket disconnection
+        socket.on('disconnect', () => {
+            if (isStreaming) {
+                isStreaming = false;
+                pushToTalkBtn.textContent = 'Push to Talk';
+                pushToTalkBtn.classList.remove('active');
+                studentIdInput.disabled = false;
+                updateStatus('Connection lost', 'error');
+            }
+        });
+    </script>
+</body>
+</html>

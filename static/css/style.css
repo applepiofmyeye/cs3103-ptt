@@ -1,0 +1,39 @@
+body {
+    font-family: Arial, sans-serif;
+    max-width: 600px;
+    margin: 2rem auto;
+    padding: 0 1rem;
+}
+
+.container {
+    text-align: center;
+}
+
+#studentIdInput {
+    padding: 0.5rem;
+    margin: 1rem 0;
+    width: 200px;
+}
+
+#pushToTalkBtn {
+    background-color: #4CAF50;
+    border: none;
+    color: white;
+    padding: 15px 32px;
+    text-align: center;
+    text-decoration: none;
+    display: none;
+    font-size: 16px;
+    margin: 4px 2px;
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+#pushToTalkBtn.active {
+    background-color: #f44336;
+}
+
+#status {
+    margin-top: 1rem;
+    font-weight: bold;
+}

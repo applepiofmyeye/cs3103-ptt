@@ -1,83 +1,110 @@
+# app.py
+from flask import Flask, render_template, request, jsonify
+from flask_socketio import SocketIO
 import threading
 import socket
 import subprocess
+import os
 
-TEACHER_IP = '192.168.18.67'
+app = Flask(__name__)
+socketio = SocketIO(app)
+
+# Configuration
+TEACHER_IP = '10.249.217.20'
 TEACHER_PORT = 59421
-STUDENT_IP = '192.168.18.67'
 STUDENT_PORT = 62193
 
-# >>> JUST ADDED THIS, DID NOT REALLY THINK OF ERROR CONTINGENCY <<<
-def send_student_id(student_id):
-    # Create a TCP socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as id_socket:
-        # Bind to the server IP and port
-        id_socket.bind((STUDENT_IP, STUDENT_PORT))
-        # Set a timeout of 5 seconds
-        id_socket.settimeout(5)
-        # Listen for incoming connections
-        id_socket.listen()
-        print("Waiting for a connection...")
+# Global state
+current_streamer = None
+stream_lock = threading.Lock()
 
-        # Accept a connection
-        while True:
-            conn, addr = id_socket.accept()
-            # Check if the connection is from the teacher's IP
-            if addr[0] == TEACHER_IP:
-                print(f"Connection accepted from {addr}")
-                # Send student_id
-                conn.sendall(student_id.encode())
-                print("Sent student ID:", student_id)
-                # Close the connection after sending
+class AudioStreamer:
+    def __init__(self, student_id):
+        self.student_id = student_id
+        self.is_streaming = False
+        self.gstreamer_process = None
+        
+    def send_student_id(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as id_socket:
+            id_socket.settimeout(5)
+            try:
+                id_socket.bind(('0.0.0.0', STUDENT_PORT))
+                id_socket.listen()
+                print(f"Waiting for teacher connection to send ID: {self.student_id}")
+                conn, addr = id_socket.accept()
+                if addr[0] == TEACHER_IP:
+                    conn.sendall(self.student_id.encode())
+                    print(f"Sent student ID: {self.student_id}")
                 conn.close()
-                break
-            else:
-                print(f"Connection from unauthorized IP: {addr}")
-                conn.close()
+                return True
+            except Exception as e:
+                print(f"Error sending student ID: {e}")
+                return False
 
-def start_gstreamer():
+    def start_streaming(self):
+        if self.is_streaming:
+            return False
+            
+        # GStreamer pipeline for microphone capture and streaming
+        gst_command = [
+            'gst-launch-1.0', '-e',
+            'pulsesrc', '!',
+            'audioconvert', '!',
+            'opusenc', '!',
+            'oggmux', '!',
+            'tcpclientsink',
+            f'host={TEACHER_IP}',
+            f'port={TEACHER_PORT}'
+        ]
+        
+        try:
+            if self.send_student_id():
+                self.gstreamer_process = subprocess.Popen(gst_command)
+                self.is_streaming = True
+                return True
+        except Exception as e:
+            print(f"Error starting stream: {e}")
+            return False
+            
+    def stop_streaming(self):
+        if self.gstreamer_process:
+            self.gstreamer_process.terminate()
+            self.gstreamer_process = None
+            self.is_streaming = False
 
-    # Build the GStreamer command
-    gst_command = [
-        'gst-launch-1.0',
-        '-e',
-        'autoaudiosrc',
-        '!',
-        'audioconvert',
-        '!',
-        'opusenc',
-        '!',
-        'oggmux',
-        '!',
-        'tcpclientsink',
-        f'host={TEACHER_IP}',
-        f'port={TEACHER_PORT}'
-    ]
+@app.route('/')
+def index():
+    return render_template('./index.html')
 
-    # Run the GStreamer command
-    try:
-        print(f"Starting GStreamer to stream audio to {TEACHER_IP}:{TEACHER_PORT}...")
-        subprocess.run(gst_command)
-    except KeyboardInterrupt:
-        print("Streaming stopped.")
-
-def main():
-
-    # Pass from GUI
-    student_id = 'AXXXXXXXR'
-
-    # Run process_incoming_connection() in a new thread
-    thread_gstreamer = threading.Thread(target=start_gstreamer)
-    thread_student_id = threading.Thread(target=send_student_id, args=(student_id,))
-
-    # Start the thread
-    thread_gstreamer.start()
-    thread_student_id.start()
+@socketio.on('start_stream')
+def handle_start_stream(data):
+    global current_streamer
     
-    # Wait for the thread to complete
-    thread_student_id.join()
-    thread_gstreamer.join()
+    with stream_lock:
+        if current_streamer is not None:
+            return {'success': False, 'message': 'Another student is currently streaming'}
+            
+        student_id = data.get('student_id')
+        if not student_id:
+            return {'success': False, 'message': 'Student ID is required'}
+            
+        current_streamer = AudioStreamer(student_id)
+        if current_streamer.start_streaming():
+            return {'success': True, 'message': 'Streaming started'}
+        else:
+            current_streamer = None
+            return {'success': False, 'message': 'Failed to start streaming'}
 
-if __name__ == "__main__":
-    main()
+@socketio.on('stop_stream')
+def handle_stop_stream():
+    global current_streamer
+    
+    with stream_lock:
+        if current_streamer:
+            current_streamer.stop_streaming()
+            current_streamer = None
+            return {'success': True, 'message': 'Streaming stopped'}
+        return {'success': False, 'message': 'No active stream'}
 
+if __name__ == '__main__':
+    socketio.run(app, host='0.0.0.0', port=5001, debug=True)

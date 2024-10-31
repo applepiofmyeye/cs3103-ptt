@@ -4,7 +4,7 @@ import threading
 import socket
 import subprocess
 
-TEACHER_IP = '192.168.18.67'
+TEACHER_IP = '10.249.217.20'
 TEACHER_PORT = 59421
 STUDENT_PORT = 62193
 
