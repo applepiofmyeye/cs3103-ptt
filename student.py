@@ -1,83 +1,125 @@
 import threading
 import socket
 import subprocess
+import tkinter as tk
+from tkinter import ttk, messagebox
 
-TEACHER_IP = '192.168.18.67'
+TEACHER_IP = '192.168.1.59'
 TEACHER_PORT = 59421
-STUDENT_IP = '192.168.18.67'
+STUDENT_IP = '192.168.1.59'
 STUDENT_PORT = 62193
+STUDENT_ID_PORT = 62194 
 
-# >>> JUST ADDED THIS, DID NOT REALLY THINK OF ERROR CONTINGENCY <<<
-def send_student_id(student_id):
-    # Create a TCP socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as id_socket:
-        # Bind to the server IP and port
-        id_socket.bind((STUDENT_IP, STUDENT_PORT))
-        # Set a timeout of 5 seconds
-        id_socket.settimeout(5)
-        # Listen for incoming connections
-        id_socket.listen()
-        print("Waiting for a connection...")
+class StudentApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Student Voice Chat")
+        self.root.geometry("400x300")
+        
+        self.gstreamer_process = None
+        
+        # Student ID input frame
+        id_frame = ttk.LabelFrame(root, text="Student Identification", padding="10")
+        id_frame.pack(fill="x", padx=10, pady=5)
+        
+        # Student ID entry
+        self.student_id = tk.StringVar()
+        ttk.Label(id_frame, text="Student ID:").pack(side="left", padx=5)
+        self.id_entry = ttk.Entry(id_frame, textvariable=self.student_id)
+        self.id_entry.pack(side="left", padx=5)
+        
+        # Submit button
+        self.submit_btn = ttk.Button(id_frame, text="Submit", command=self.submit_id)
+        self.submit_btn.pack(side="left", padx=5)
+        
+        # Push to talk frame
+        ptt_frame = ttk.LabelFrame(root, text="Push to Talk", padding="10")
+        ptt_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # Push to talk button
+        self.ptt_btn = ttk.Button(ptt_frame, text="Push to Talk")
+        self.ptt_btn.pack(expand=True, pady=20)
+        self.ptt_btn.bind('<ButtonPress-1>', self.start_talking)
+        self.ptt_btn.bind('<ButtonRelease-1>', self.stop_talking)
+        
+        # Initially disable PTT button until ID is submitted
+        self.ptt_btn.state(['disabled'])
+        
+        # Status label
+        self.status_var = tk.StringVar(value="Please submit your Student ID")
+        self.status_label = ttk.Label(root, textvariable=self.status_var)
+        self.status_label.pack(pady=10)
 
-        # Accept a connection
-        while True:
-            conn, addr = id_socket.accept()
-            # Check if the connection is from the teacher's IP
-            if addr[0] == TEACHER_IP:
-                print(f"Connection accepted from {addr}")
-                # Send student_id
-                conn.sendall(student_id.encode())
-                print("Sent student ID:", student_id)
-                # Close the connection after sending
-                conn.close()
-                break
-            else:
-                print(f"Connection from unauthorized IP: {addr}")
-                conn.close()
+    def submit_id(self):
+        if not self.student_id.get().strip():
+            messagebox.showerror("Error", "Please enter a Student ID")
+            return
+            
+        try:
+            # Try to connect directly to teacher to send ID
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as id_socket:
+                try:
+                    print(f"Sending student ID: {self.student_id.get()}")
+                    id_socket.settimeout(5)
+                    id_socket.connect((TEACHER_IP, STUDENT_ID_PORT))
+                    id_socket.sendall(self.student_id.get().encode())
+                    id_socket.close()
+                    
+                    # If successful, enable PTT
+                    self.submit_btn.state(['disabled'])
+                    self.id_entry.state(['disabled'])
+                    self.ptt_btn.state(['!disabled'])
+                    self.status_var.set("ID submitted successfully. Ready to talk.")
+                    
+                except Exception as e:
+                    raise Exception(f"Could not connect to teacher: {str(e)}")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to submit ID: {str(e)}")
+            self.reset_id_submission()
+    
+    def reset_id_submission(self):
+        self.submit_btn.state(['!disabled'])
+        self.id_entry.state(['!disabled'])
+        self.ptt_btn.state(['disabled'])
+        self.status_var.set("Please submit your Student ID")
 
-def start_gstreamer():
-
-    # Build the GStreamer command
-    gst_command = [
-        'gst-launch-1.0',
-        '-e',
-        'autoaudiosrc',
-        '!',
-        'audioconvert',
-        '!',
-        'opusenc',
-        '!',
-        'oggmux',
-        '!',
-        'tcpclientsink',
-        f'host={TEACHER_IP}',
-        f'port={TEACHER_PORT}'
-    ]
-
-    # Run the GStreamer command
-    try:
-        print(f"Starting GStreamer to stream audio to {TEACHER_IP}:{TEACHER_PORT}...")
-        subprocess.run(gst_command)
-    except KeyboardInterrupt:
-        print("Streaming stopped.")
+    def start_talking(self, event):
+        try:
+            # Build the GStreamer command
+            gst_command = [
+                'gst-launch-1.0',
+                '-e',
+                'autoaudiosrc',
+                '!',
+                'audioconvert',
+                '!',
+                'opusenc',
+                '!',
+                'oggmux',
+                '!',
+                'tcpclientsink',
+                f'host={TEACHER_IP}',
+                f'port={TEACHER_PORT}'
+            ]
+            
+            # Start GStreamer process
+            self.gstreamer_process = subprocess.Popen(gst_command)
+            self.status_var.set("Broadcasting audio...")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to start audio: {str(e)}")
+    
+    def stop_talking(self, event):
+        if self.gstreamer_process:
+            self.gstreamer_process.terminate()
+            self.gstreamer_process = None
+            self.status_var.set("Ready to talk")
 
 def main():
-
-    # Pass from GUI
-    student_id = 'AXXXXXXXR'
-
-    # Run process_incoming_connection() in a new thread
-    thread_gstreamer = threading.Thread(target=start_gstreamer)
-    thread_student_id = threading.Thread(target=send_student_id, args=(student_id,))
-
-    # Start the thread
-    thread_gstreamer.start()
-    thread_student_id.start()
-    
-    # Wait for the thread to complete
-    thread_student_id.join()
-    thread_gstreamer.join()
+    root = tk.Tk()
+    app = StudentApp(root)
+    root.mainloop()
 
 if __name__ == "__main__":
     main()
-

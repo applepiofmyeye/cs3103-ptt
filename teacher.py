@@ -4,15 +4,15 @@ import threading
 import socket
 import subprocess
 
-TEACHER_IP = '192.168.18.67'
+TEACHER_IP = '192.168.1.59'
 TEACHER_PORT = 59421
 STUDENT_PORT = 62193
+STUDENT_ID_PORT = 62194
 
-# Flag to track connection state
-zero_connection = True
-# Lock to prevent race condition between threads
-zero_connection_lock = threading.Lock()
+# Dictionary to store active student connections WHAT DOES THIS DO?
 
+active_students = {}
+active_students_lock = threading.Lock()
 
 def gstreamer_pipeline():
 
@@ -25,31 +25,13 @@ def gstreamer_pipeline():
     #   autoaudiosink: automatically select output and play audio
     gst_command = "gst-launch-1.0 -e fdsrc ! oggdemux ! opusdec ! audioconvert ! autoaudiosink"
 
-    # Start the GStreamer pipeline
     process = subprocess.Popen(gst_command, shell=True, stdin=subprocess.PIPE)
 
     return process
 
-
-def process_data(conn, addr):
-    print(f"Connected by {addr}")
-    global zero_connection
-
-    # >>> JUST ADDED THIS, DID NOT REALLY THINK OF ERROR CONTINGENCY <<<
-    # "Ask" for student id
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as id_socket:
-        # Set a timeout of 5 seconds
-        id_socket.settimeout(5)
-        try:
-            # Connect to the student’s socket
-            id_socket.connect((addr[0], STUDENT_PORT))
-            # Listen for data (student should send over student ID)
-            data = id_socket.recv(1024)
-            print("Talking student:", data.decode())
-        except Exception as e:
-            print("Could not get student ID:", e)
-    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-
+def process_data(conn, addr, student_id):
+    print(f"Processing audio from student {student_id} at {addr}")
+    
     # Start GStreamer pipeline
     gstreamer_process = gstreamer_pipeline()
     print("GStreamer pipeline started.")
@@ -57,12 +39,9 @@ def process_data(conn, addr):
     # Pipe data from the TCP connection to GStreamer
     try:
         while True:
-            # Read data from TCP buffer
             data = conn.recv(4096)
-            # If connection closed by client
             if not data:
                 break
-            # Write data to the GStreamer process stdin
             gstreamer_process.stdin.write(data)
             gstreamer_process.stdin.flush()
     except Exception as e:
@@ -70,53 +49,78 @@ def process_data(conn, addr):
     finally:
         gstreamer_process.terminate()
         print("GStreamer pipeline terminated.")
-
-    # Blocks until the lock is acquired; automatically releases the lock upon exiting the scope.
-    with zero_connection_lock:
-        zero_connection = True
-
+        
+        # Remove student from active connections
+        with active_students_lock:
+            if student_id in active_students:
+                del active_students[student_id]
+                print(f"Removed student {student_id} from active connections")
 
 def process_incoming_connection(s):
-    global zero_connection
-
     while True:
-
-        # Blocks until a connection is accepted
         conn, addr = s.accept()
+        
+        # Check if this is a known student
+        student_id = None
+        with active_students_lock:
+            for sid, ip in active_students.items():
+                if ip == addr[0]:
+                    student_id = sid
+                    break
+        
+        if student_id:
+            # Start processing in new thread
+            thread_process_data = threading.Thread(
+                target=process_data, 
+                args=(conn, addr, student_id)
+            )
+            thread_process_data.start()
+        else:
+            # Unknown connection, reject it
+            conn.close()
+            print(f"Connection from {addr} rejected: unknown student")
 
-        # Blocks execution until the lock is acquired; automatically releases the lock upon exiting the scope.
-        with zero_connection_lock:
-            # Process data
-            if zero_connection:
-                # Update flag
-                zero_connection = False
-                # Circumvent pass-by-ref
-                connection, address = conn, addr
-                # Run process_data() in a new thread
-                thread_process_data = threading.Thread(target=process_data, args=(connection, address))
-                # Start the thread
-                thread_process_data.start()
-                continue
-
-        # Immediately close the connection
-        conn.close()
-        print(f"Connection from {addr} rejected: active connection already exists.")
-
+    
+def handle_student_id():
+    """Handle incoming student ID connections (Student ID Port)"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as id_socket:
+        id_socket.bind((TEACHER_IP, STUDENT_ID_PORT))
+        id_socket.listen()
+        print(f"Listening for student IDs on {TEACHER_IP}:{STUDENT_ID_PORT}...")
+        
+        while True:
+            conn, addr = id_socket.accept()
+            try:
+                student_id = conn.recv(1024).decode()
+                print(f"Received student ID: {student_id} from {addr}")
+                
+                # Store student info
+                with active_students_lock:
+                    active_students[student_id] = addr[0]
+                
+                conn.close()
+            except Exception as e:
+                print(f"Error receiving student ID: {e}")
+                conn.close()
 
 def run_server():
-    # Create TCP socket that auto close upon out of scope
+    # Start thread for handling student IDs
+    id_thread = threading.Thread(target=handle_student_id)
+    id_thread.daemon = True
+    id_thread.start()
+    
+    # Handle audio connections
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        # Bind socket
         s.bind((TEACHER_IP, TEACHER_PORT))
-        # Listen
         s.listen()
-        print(f"Listening on {TEACHER_IP}:{TEACHER_PORT}...")
-        # Run process_incoming_connection() in a new thread
-        thread_process_incoming_connection = threading.Thread(target=process_incoming_connection, args=(s,))
-        # Start the thread
+        print(f"Listening for audio on {TEACHER_IP}:{TEACHER_PORT}...")
+        
+        thread_process_incoming_connection = threading.Thread(
+            target=process_incoming_connection, 
+            args=(s,)
+        )
         thread_process_incoming_connection.start()
-        # Wait for the thread to complete
-        thread_process_incoming_connection.join()
+        thread_process_incoming_connection.join() # Wait for the thread to complete
 
 
 if __name__ == "__main__":
