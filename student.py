@@ -49,7 +49,6 @@ class StudentApp:
         self.status_var = tk.StringVar(value="Please submit your Student ID")
         self.status_label = ttk.Label(root, textvariable=self.status_var)
         self.status_label.pack(pady=10)
-
     def submit_id(self):
         if not self.student_id.get().strip():
             messagebox.showerror("Error", "Please enter a Student ID")
@@ -63,7 +62,11 @@ class StudentApp:
                     id_socket.settimeout(5)
                     id_socket.connect((TEACHER_IP, STUDENT_ID_PORT))
                     id_socket.sendall(self.student_id.get().encode())
-                    id_socket.close()
+                    
+                    # Wait for acknowledgment
+                    response = id_socket.recv(1024).decode()
+                    if response != "OK":
+                        raise Exception("Registration not acknowledged by teacher")
                     
                     # If successful, enable PTT
                     self.submit_btn.state(['disabled'])
@@ -77,7 +80,6 @@ class StudentApp:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to submit ID: {str(e)}")
             self.reset_id_submission()
-    
     def reset_id_submission(self):
         self.submit_btn.state(['!disabled'])
         self.id_entry.state(['!disabled'])
@@ -89,10 +91,12 @@ class StudentApp:
             # Build the GStreamer command
             gst_command = [
                 'gst-launch-1.0',
-                '-e',
+                '-v',  # Add verbose output
                 'autoaudiosrc',
                 '!',
                 'audioconvert',
+                '!',
+                'audioresample',  # Add this to handle sample rate conversion
                 '!',
                 'opusenc',
                 '!',
@@ -103,12 +107,29 @@ class StudentApp:
                 f'port={TEACHER_PORT}'
             ]
             
-            # Start GStreamer process
-            self.gstreamer_process = subprocess.Popen(gst_command)
+            print(f"Starting GStreamer with command: {' '.join(gst_command)}")
+            
+            # Start GStreamer process with pipe for stderr
+            self.gstreamer_process = subprocess.Popen(
+                gst_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+        
+            # Start a thread to monitor the process output
+            def monitor_output():
+                while self.gstreamer_process:
+                    output = self.gstreamer_process.stderr.readline()
+                    if output:
+                        print(f"GStreamer: {output.decode().strip()}")
+                    
+            threading.Thread(target=monitor_output, daemon=True).start()
+            
             self.status_var.set("Broadcasting audio...")
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to start audio: {str(e)}")
+            print(f"Error starting GStreamer: {str(e)}")
     
     def stop_talking(self, event):
         if self.gstreamer_process:
